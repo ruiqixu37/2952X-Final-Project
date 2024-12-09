@@ -27,7 +27,7 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
-    
+from network import SemanticPredictor    
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -36,6 +36,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
+    semantic_nn = SemanticPredictor(input_dim=3, camera_dim=12, output_dim=3, hidden_dim=64, num_layers=3, degree=1).cuda()
+    optimizer_semantic_nn = torch.optim.Adam(semantic_nn.parameters(), lr=1e-4)
     gaussians.training_setup(opt)
 
     if opt.include_feature:
@@ -57,7 +59,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
+    for iteration in range(first_iter, opt.iterations + 1):
+        optimizer_semantic_nn.zero_grad() 
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -89,7 +92,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background, opt)
+        # flatten the rotation and translation matrix of the camera
+        camera_extrinsics = torch.cat((torch.tensor(viewpoint_cam.R).flatten(), torch.tensor(viewpoint_cam.T).flatten()), dim=0).cuda()
+        pred_language_feature = semantic_nn(gaussians.get_xyz, camera_extrinsics.cuda())
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, opt, pred_language_feature=pred_language_feature)
         image, language_feature, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["language_feature_image"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         # Loss
@@ -102,6 +108,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
+        # backward the semantic loss for the semantic predictor
+        optimizer_semantic_nn.step()
         iter_end.record()
         with torch.no_grad():
             # Progress bar

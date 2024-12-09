@@ -16,7 +16,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, opt, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, opt, scaling_modifier = 1.0, override_color = None, pred_language_feature = None):
     """
     Render the scene. 
     
@@ -47,7 +47,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=pipe.debug,
-        include_feature=opt.include_feature,
+        include_feature=opt.include_feature, # Language feature training
+        # include_feature=True, # Original 3D GS training (very unintuitive)
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -84,11 +85,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         colors_precomp = override_color
 
     if opt.include_feature:
-        language_feature_precomp = pc.get_language_feature
+        if pred_language_feature is not None:
+            language_feature_precomp = pred_language_feature
+        else:
+            language_feature_precomp = pc.get_language_feature
         language_feature_precomp = language_feature_precomp/ (language_feature_precomp.norm(dim=-1, keepdim=True) + 1e-9)
         # language_feature_precomp = torch.sigmoid(language_feature_precomp)
     else:
-        language_feature_precomp = torch.zeros((1,), dtype=opacity.dtype, device=opacity.device)
+        language_feature_precomp = torch.zeros((1,), dtype=opacity.dtype, device=opacity.device) # Language feature training
+        # language_feature_precomp = colors_precomp * 0.0 # Original 3D GS training
         
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     # start_time = time.time()

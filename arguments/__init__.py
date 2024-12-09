@@ -66,8 +66,10 @@ class ModelParams(ParamGroup):
 
 class PipelineParams(ParamGroup):
     def __init__(self, parser):
-        self.convert_SHs_python = False
-        self.compute_cov3D_python = False
+        # self.convert_SHs_python = True # Original 3D GS training
+        # self.compute_cov3D_python = True # Original 3D GS training
+        self.convert_SHs_python = False # Language feature training
+        self.compute_cov3D_python = False # Language feature training 
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
 
@@ -81,7 +83,8 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.language_feature_lr = 0.0025 # TODO: update
-        self.include_feature = True # Set to False if train the original gs
+        # self.include_feature = False # Original 3D GS training
+        self.include_feature = True # Language feature training
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
