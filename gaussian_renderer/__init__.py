@@ -16,7 +16,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, opt, scaling_modifier = 1.0, override_color = None, pred_language_feature = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, opt, scaling_modifier = 1.0, override_color = None, pred_language_feature = None, mask=None):
     """
     Render the scene. 
     
@@ -57,6 +57,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     means2D = screenspace_points
     opacity = pc.get_opacity
 
+    if mask is not None:
+        masked_indices = torch.where(mask == 0.0)[0]
+        opacity[masked_indices] = 1
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
     scales = None
