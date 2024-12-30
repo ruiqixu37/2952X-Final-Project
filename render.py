@@ -16,6 +16,7 @@ from tqdm import tqdm
 from os import makedirs
 from gaussian_renderer import render
 import torchvision
+import torch.nn.functional as F
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
@@ -63,16 +64,16 @@ from sklearn.metrics.pairwise import cosine_similarity
 def render_set(
     model_path, source_path, name, iteration, views, gaussians, pipeline, background, args
 ):
-    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_after")
+    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_after_cossim")
     makedirs(render_path, exist_ok=True)
 
     # 初始化语义预测器并加载权重
     from network import SemanticPredictor
     semantic_nn = SemanticPredictor(
-        input_dim=3, camera_dim=12, output_dim=3, hidden_dim=64, num_layers=3, degree=1
+        input_dim=10, camera_dim=12, output_dim=3, hidden_dim=256, num_layers=5, degree=2
     ).cuda()
     semantic_nn_ckpt = torch.load(
-        '/n/netscratch/pfister_lab/Everyone/yingwei/final_proj/2952X-Final-Project/dataset/patio/output/patio/semantic_nn_30000_lvl3.pth'
+        '/home/rxu37/GitHub/2952X-Final-Project/ckpts/semantic_nn_30000.pth'
     )
     semantic_nn.load_state_dict(semantic_nn_ckpt)
     semantic_nn.eval()
@@ -83,53 +84,48 @@ def render_set(
     # 初始化完整的 pred_features 存储张量
     all_features = torch.zeros((N, len(views), 3), device='cuda')  # Shape: (N, num_views, output_dim)
 
+    # get all gaussians' covariances and opacities
+    opacity = gaussians.get_opacity
+    covariances = gaussians.get_covariance()
+    xyz = gaussians.get_xyz
+    semantic_nn_input = torch.cat((opacity, covariances, xyz), dim=1)
 
     # 遍历每个视角生成 pred_features
-    for view_idx, view in enumerate(tqdm(views[:20], desc="Processing Views")):
+    for view_idx, view in enumerate(tqdm(views, desc="Processing Views")):
         # 当前视角的相机外参
         camera_extrinsics = torch.cat(
             (torch.tensor(view.R).flatten(), torch.tensor(view.T).flatten()), dim=0
         ).cuda()  # Shape: (12,)
 
         # 计算所有高斯球的 pred_features
-        pred_features = semantic_nn(gaussians.get_xyz, camera_extrinsics)  # Shape: (N, output_dim)
+        pred_features = semantic_nn(semantic_nn_input, camera_extrinsics)  # Shape: (N, output_dim)
         all_features[:, view_idx, :] = pred_features  # 存储当前视角的特征
 
-    sample_size = min(1000, N)  # 每次采样的高斯球数
-    for _ in range(100):  # 重复采样次数
-        # 随机采样高斯球
-        sampled_indices = np.random.choice(N, sample_size, replace=False)
+    # normalized_features = F.normalize(all_features, p=2, dim=-1)  # normalize features
+    # mean_features = normalized_features.mean(dim=1, keepdim=True)
+    # squared_diff = (normalized_features - mean_features) ** 2
+    # std_features = torch.sqrt(squared_diff.mean(dim=(1, 2))) 
+    # mask = (std_features > 0.1).float()
 
-        # 提取采样的高斯球特征
-        sampled_features = all_features[sampled_indices, :, :]  # Shape: (sample_size, num_views, output_dim)
-
-        # 比较不同视角下的特征
-        for i in range(sample_size):
-            features = sampled_features[i].cpu().detach().numpy()  # Shape: (num_views, output_dim)
-            if features.shape[0] < 2:  # 如果视角不足两次，则跳过该高斯球
-                continue
-            # 计算不同视角间的相似性
-            similarity_matrix = cosine_similarity(features)  # Shape: (num_views, num_views)
-            avg_similarity = np.mean(similarity_matrix[np.triu_indices(len(views), k=1)])  # 取非对角线部分的平均值
-            # print("avg_similarity", avg_similarity)
-            # 更新 mask
-            if avg_similarity < 0.7:  # 阈值可调
-                mask[sampled_indices[i]] = 0.0
-
+    normalized_features = F.normalize(all_features, p=2, dim=-1)  # normalize features
+    # cosine_sim = torch.bmm(normalized_features, normalized_features.permute(0, 2, 1))  # Shape: (N, num_views, num_views)
+    # above line is too memoery consuming, process instance by instance
+    mask = torch.zeros(N, device='cuda', dtype=torch.bool) # 初始化 mask，默认全可见
+    for i in tqdm(range(N), desc="Processing Gaussians"):
+        cosine_sim = cosine_similarity(normalized_features[i].cpu().numpy())
+        lower_triangle_mask = torch.tril(torch.ones(len(views), len(views)), diagonal=-1).bool()  # Shape: (N, num_views, num_views)
+        lower_triangle_values = cosine_sim[lower_triangle_mask]
+        lower_triangle_avg = torch.tensor(lower_triangle_values).mean()
+        mask[i] = (lower_triangle_avg < 0.8)
 
     # 在 render 中传入 mask
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        semantic_nn = SemanticPredictor(input_dim=3, camera_dim=12, output_dim=3, hidden_dim=64, num_layers=3, degree=1).cuda()
-        semantic_nn_ckpt = torch.load('/n/netscratch/pfister_lab/Everyone/yingwei/final_proj/2952X-Final-Project/dataset/patio/output/patio/semantic_nn_30000_lvl3.pth')
-        semantic_nn.load_state_dict(semantic_nn_ckpt)
-        semantic_nn.eval()
-
         camera_extrinsics = torch.cat((torch.tensor(view.R).flatten(), torch.tensor(view.T).flatten()), dim=0).cuda()
-        pred_language_feature = semantic_nn(gaussians.get_xyz, camera_extrinsics.cuda())
+        pred_features = semantic_nn(semantic_nn_input, camera_extrinsics)  # Shape: (N, output_dim)
 
-        output = render(view, gaussians, pipeline, background, args, pred_language_feature=pred_language_feature, mask=mask)
+        output = render(view, gaussians, pipeline, background, args, pred_language_feature=pred_features, mask=mask)
 
-        rendering = output["render"] if not args.include_feature else output["render"] 
+        rendering = output["render"] if not args.include_feature else output["language_feature_image"] 
         # rendering = output["render"] if not args.include_feature else output["language_feature_image"]
 
        # np.save(os.path.join(render_path, '{0:05d}'.format(idx) + ".npy"),rendering.permute(1,2,0).cpu().numpy())
