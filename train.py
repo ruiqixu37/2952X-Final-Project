@@ -36,7 +36,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
-    semantic_nn = SemanticPredictor(input_dim=3, camera_dim=12, output_dim=3, hidden_dim=64, num_layers=3, degree=1).cuda()
+    semantic_nn = SemanticPredictor(input_dim=10, camera_dim=12, output_dim=3, hidden_dim=256, num_layers=5, degree=2).cuda()
     optimizer_semantic_nn = torch.optim.Adam(semantic_nn.parameters(), lr=1e-4)
     gaussians.training_setup(opt)
 
@@ -94,7 +94,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
         # flatten the rotation and translation matrix of the camera
         camera_extrinsics = torch.cat((torch.tensor(viewpoint_cam.R).flatten(), torch.tensor(viewpoint_cam.T).flatten()), dim=0).cuda()
-        pred_language_feature = semantic_nn(gaussians.get_xyz, camera_extrinsics.cuda())
+        opacity = gaussians.get_opacity
+        covariances = gaussians.get_covariance()
+        xyz = gaussians.get_xyz
+        # concatenate the opacity, covariances and xyz to form the input of the semantic predictor
+        semantic_nn_input = torch.cat((opacity, covariances, xyz), dim=1)
+        pred_language_feature = semantic_nn(semantic_nn_input, camera_extrinsics.cuda())
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, opt, pred_language_feature=pred_language_feature)
         image, language_feature, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["language_feature_image"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
@@ -148,6 +153,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(opt.include_feature), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+            
+        # save the model parameters of semantic predictor
+        if iteration % 1000 == 0:
+            torch.save(semantic_nn.state_dict(), f"ckpts/semantic_nn_{iteration}.pth")
             
 def prepare_output_and_logger(args):    
     if not args.model_path:

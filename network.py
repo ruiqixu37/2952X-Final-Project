@@ -37,9 +37,9 @@ class SemanticPredictor(nn.Module):
         super(SemanticPredictor, self).__init__()
 
         self.degree = degree
-        self.input_dim = input_dim * (
+        self.input_dim = 3 * (
             2 * degree + 1
-        ) + camera_dim # adjust the input dimension for different positional encoding
+        ) + camera_dim + 6 + 1 # adjust the input dimension for different positional encoding
         print(f"self.input_dim: {self.input_dim}")
         layers = []
         layers.append(nn.Linear(self.input_dim, hidden_dim))
@@ -61,7 +61,9 @@ class SemanticPredictor(nn.Module):
         :param camera_features: Camera features of shape (camera_dim).
         :return: Output tensor of shape (batch_size, output_dim) with probabilities.
         """
-        x = positional_encoding(x, self.degree)
+        xyz = positional_encoding(x[:, :3], degree=self.degree)
+        # concatenate positional encoding with input features
+        x = torch.cat([xyz, x[:, 3:]], dim=-1)
         # repeat camera features for each point
         camera_features = camera_features.unsqueeze(0).repeat(x.shape[0], 1).float()
         x = torch.cat([x, camera_features], dim=-1)
